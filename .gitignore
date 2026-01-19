@@ -1,0 +1,19 @@
+# Environment
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# Temp files
+temp/
+*.mp3
+*.m4a
+*.wav
+*.mp4
+*.webm
+
+# Whisper model cache
+whisper_models/
+
+# macOS
+.DS_Store
