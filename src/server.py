@@ -128,8 +128,9 @@ def format_timestamp(seconds: float) -> str:
     return f"[{minutes:02d}:{secs:02d}]"
 
 
-def format_duration(seconds: int) -> str:
+def format_duration(seconds) -> str:
     """Format duration for display"""
+    seconds = int(seconds or 0)  # Handle None and float
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     secs = seconds % 60
