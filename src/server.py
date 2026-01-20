@@ -94,20 +94,31 @@ def get_video_info(url: str) -> dict:
     return {"title": "Unknown", "duration": 0, "uploader": "Unknown"}
 
 
-def download_audio(url: str, output_path: Path) -> bool:
-    """Download audio from video URL using yt-dlp"""
+def download_audio(url: str, output_path: Path, duration_limit: int = None) -> bool:
+    """Download audio from video URL using yt-dlp
+
+    Args:
+        duration_limit: If set, download only first N seconds
+    """
     try:
+        cmd = [
+            "yt-dlp",
+            "-x",  # Extract audio
+            "--audio-format", "mp3",
+            "--audio-quality", "0",  # Best quality
+            "-o", str(output_path),
+            "--no-playlist",  # Single video only
+            "--no-warnings",
+        ]
+
+        # Add duration limit if specified
+        if duration_limit:
+            cmd.extend(["--download-sections", f"*0-{duration_limit}"])
+
+        cmd.append(url)
+
         result = subprocess.run(
-            [
-                "yt-dlp",
-                "-x",  # Extract audio
-                "--audio-format", "mp3",
-                "--audio-quality", "0",  # Best quality
-                "-o", str(output_path),
-                "--no-playlist",  # Single video only
-                "--no-warnings",
-                url
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=300  # 5 min timeout
@@ -216,7 +227,7 @@ def save_transcript(
 TOOLS = [
     Tool(
         name="transcribe_url",
-        description="Download and transcribe a video from YouTube, Instagram, or other platforms to text",
+        description="Download and transcribe a video from YouTube, Instagram, or other platforms to text. Use preview_minutes to transcribe only the first N minutes for long videos.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -228,6 +239,10 @@ TOOLS = [
                     "type": "string",
                     "enum": ["ru", "en", "auto"],
                     "description": "Language of the video (default: ru)",
+                },
+                "preview_minutes": {
+                    "type": "integer",
+                    "description": "If set, transcribe only the first N minutes (for previewing long videos). Recommended: 10-15 for preview.",
                 },
             },
             "required": ["url"],
@@ -268,7 +283,7 @@ TOOLS = [
 ]
 
 
-async def handle_transcribe_url(url: str, language: str = None) -> dict:
+async def handle_transcribe_url(url: str, language: str = None, preview_minutes: int = None) -> dict:
     """Handle transcribe_url tool call"""
     language = language or DEFAULT_LANGUAGE
     platform = detect_platform(url)
@@ -276,14 +291,21 @@ async def handle_transcribe_url(url: str, language: str = None) -> dict:
     # Get video info
     info = get_video_info(url)
     title = info["title"]
-    duration = info["duration"]
+    total_duration = info["duration"]
+
+    # Calculate duration limit for preview
+    duration_limit = None
+    is_preview = False
+    if preview_minutes and preview_minutes > 0:
+        duration_limit = preview_minutes * 60  # Convert to seconds
+        is_preview = True
 
     # Download audio to temp file
     temp_audio = TEMP_DIR / f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
     try:
-        # Download
-        if not download_audio(url, temp_audio):
+        # Download (with optional duration limit)
+        if not download_audio(url, temp_audio, duration_limit):
             return {"error": f"Failed to download audio from {url}. Make sure the video is public."}
 
         # Find the actual file (yt-dlp might add extension)
@@ -301,22 +323,35 @@ async def handle_transcribe_url(url: str, language: str = None) -> dict:
         if not segments:
             return {"error": "No speech detected in the video"}
 
-        # Save transcript
-        filepath = save_transcript(url, platform, title, duration, segments, language)
+        # For preview, don't save to file yet
+        transcribed_duration = int(segments[-1]["end"]) if segments else 0
 
         # Build response
         full_text = " ".join(seg["text"] for seg in segments)
 
-        return {
+        result = {
             "success": True,
             "platform": platform,
             "title": title,
-            "duration": format_duration(duration),
             "language": language,
             "segments_count": len(segments),
-            "saved_to": str(filepath),
             "transcript": full_text,
         }
+
+        if is_preview:
+            result["is_preview"] = True
+            result["preview_duration"] = format_duration(transcribed_duration)
+            result["total_duration"] = format_duration(total_duration)
+            remaining = int(total_duration) - transcribed_duration
+            result["remaining_duration"] = format_duration(remaining)
+            result["message"] = f"Превью первых {preview_minutes} минут. Полная длина видео: {format_duration(total_duration)}. Скажи 'продолжай' или 'транскрибируй полностью' для полной версии."
+        else:
+            result["duration"] = format_duration(total_duration)
+            # Save transcript only for full transcription
+            filepath = save_transcript(url, platform, title, total_duration, segments, language)
+            result["saved_to"] = str(filepath)
+
+        return result
 
     finally:
         # Cleanup temp files
@@ -395,6 +430,7 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
             result = await handle_transcribe_url(
                 arguments["url"],
                 arguments.get("language"),
+                arguments.get("preview_minutes"),
             )
         elif name == "transcribe_file":
             result = await handle_transcribe_file(
