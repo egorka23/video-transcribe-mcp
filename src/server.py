@@ -98,32 +98,64 @@ def download_audio(url: str, output_path: Path, duration_limit: int = None) -> b
     """Download audio from video URL using yt-dlp
 
     Args:
-        duration_limit: If set, download only first N seconds
+        duration_limit: If set, cut audio to first N seconds using ffmpeg
     """
     try:
+        # First download full audio
+        temp_full = output_path.parent / f"full_{output_path.name}"
+
         cmd = [
             "yt-dlp",
             "-x",  # Extract audio
             "--audio-format", "mp3",
             "--audio-quality", "0",  # Best quality
-            "-o", str(output_path),
+            "-o", str(temp_full),
             "--no-playlist",  # Single video only
             "--no-warnings",
         ]
-
-        # Add duration limit if specified
-        if duration_limit:
-            cmd.extend(["--download-sections", f"*0-{duration_limit}"])
-
         cmd.append(url)
 
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300  # 5 min timeout
+            timeout=600  # 10 min timeout for download
         )
-        return result.returncode == 0
+
+        if result.returncode != 0:
+            return False
+
+        # Find the actual downloaded file
+        actual_full = None
+        for f in output_path.parent.glob("full_*.mp3"):
+            actual_full = f
+            break
+
+        if not actual_full or not actual_full.exists():
+            return False
+
+        # If duration limit specified, cut with ffmpeg
+        if duration_limit:
+            cut_result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(actual_full),
+                    "-t", str(duration_limit),  # Duration in seconds
+                    "-acodec", "copy",  # Copy without re-encoding (fast)
+                    str(output_path)
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            # Remove full file
+            actual_full.unlink()
+            return cut_result.returncode == 0
+        else:
+            # No limit - just rename
+            actual_full.rename(output_path)
+            return True
+
     except Exception as e:
         return False
 
@@ -355,11 +387,12 @@ async def handle_transcribe_url(url: str, language: str = None, preview_minutes:
 
     finally:
         # Cleanup temp files
-        for f in TEMP_DIR.glob("audio_*"):
-            try:
-                f.unlink()
-            except:
-                pass
+        for pattern in ["audio_*", "full_*"]:
+            for f in TEMP_DIR.glob(pattern):
+                try:
+                    f.unlink()
+                except:
+                    pass
 
 
 async def handle_transcribe_file(file_path: str, language: str = None) -> dict:
