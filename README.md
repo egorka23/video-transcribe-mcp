@@ -83,6 +83,15 @@ For long videos, preview first 10-15 minutes before full transcription:
 
 After preview, say "continue" or "продолжай" for full transcription.
 
+### Skip Intro (start_minute)
+
+Some videos have long intros or waiting screens. Skip them:
+
+```
+"Preview 10 minutes starting from minute 12: https://youtube.com/..."
+"Транскрибируй начиная с 5-й минуты: https://youtube.com/..."
+```
+
 ### Languages
 
 - `ru` - Russian (default)

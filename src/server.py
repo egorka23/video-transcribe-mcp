@@ -110,40 +110,55 @@ def get_audio_url(video_url: str) -> str | None:
     return None
 
 
-def download_audio(url: str, output_path: Path, duration_limit: int = None) -> bool:
+def download_audio(url: str, output_path: Path, duration_limit: int = None, start_time: int = None) -> bool:
     """Download audio from video URL
 
     Args:
-        duration_limit: If set, download only first N seconds using ffmpeg streaming
+        duration_limit: If set, download only N seconds
+        start_time: If set, start from this second (skip intro)
     """
     try:
-        # For preview: stream directly with ffmpeg (much faster)
-        if duration_limit:
+        # For preview/partial: try streaming with ffmpeg first (faster)
+        if duration_limit or start_time:
             audio_url = get_audio_url(url)
             if audio_url:
+                cmd = ["ffmpeg", "-y"]
+
+                # Add start time if specified
+                if start_time:
+                    cmd.extend(["-ss", str(start_time)])
+
+                cmd.extend(["-i", audio_url])
+
+                # Add duration limit if specified
+                if duration_limit:
+                    cmd.extend(["-t", str(duration_limit)])
+
+                cmd.extend([
+                    "-vn",  # No video
+                    "-acodec", "libmp3lame",
+                    "-ab", "192k",
+                    str(output_path)
+                ])
+
                 result = subprocess.run(
-                    [
-                        "ffmpeg", "-y",
-                        "-i", audio_url,
-                        "-t", str(duration_limit),
-                        "-vn",  # No video
-                        "-acodec", "libmp3lame",
-                        "-ab", "192k",
-                        str(output_path)
-                    ],
+                    cmd,
                     capture_output=True,
                     text=True,
-                    timeout=180  # 3 min should be enough for 10-15 min audio
+                    timeout=300  # 5 min timeout
                 )
-                return result.returncode == 0
+                if result.returncode == 0 and output_path.exists():
+                    return True
+                # If streaming failed, fall through to yt-dlp
 
-        # Full download: use yt-dlp
+        # Download with yt-dlp (works for more video types)
+        temp_full = output_path.parent / f"full_{output_path.name}"
         cmd = [
             "yt-dlp",
             "-x",  # Extract audio
             "--audio-format", "mp3",
             "--audio-quality", "0",  # Best quality
-            "-o", str(output_path),
+            "-o", str(temp_full),
             "--no-playlist",
             "--no-warnings",
             url
@@ -153,9 +168,40 @@ def download_audio(url: str, output_path: Path, duration_limit: int = None) -> b
             cmd,
             capture_output=True,
             text=True,
-            timeout=600
+            timeout=900  # 15 min timeout for long videos
         )
-        return result.returncode == 0
+
+        if result.returncode != 0:
+            return False
+
+        # Find downloaded file
+        actual_full = None
+        for f in output_path.parent.glob("full_*.mp3"):
+            actual_full = f
+            break
+
+        if not actual_full or not actual_full.exists():
+            return False
+
+        # Cut if duration limit specified
+        if duration_limit:
+            cut_result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(actual_full),
+                    "-t", str(duration_limit),
+                    "-acodec", "copy",
+                    str(output_path)
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            actual_full.unlink()
+            return cut_result.returncode == 0
+        else:
+            actual_full.rename(output_path)
+            return True
 
     except Exception as e:
         return False
@@ -275,7 +321,11 @@ TOOLS = [
                 },
                 "preview_minutes": {
                     "type": "integer",
-                    "description": "If set, transcribe only the first N minutes (for previewing long videos). Recommended: 10-15 for preview.",
+                    "description": "If set, transcribe only N minutes (for previewing long videos). Recommended: 10-15 for preview.",
+                },
+                "start_minute": {
+                    "type": "integer",
+                    "description": "Start transcription from this minute (skip intro/waiting). Default: 0",
                 },
             },
             "required": ["url"],
@@ -316,7 +366,7 @@ TOOLS = [
 ]
 
 
-async def handle_transcribe_url(url: str, language: str = None, preview_minutes: int = None) -> dict:
+async def handle_transcribe_url(url: str, language: str = None, preview_minutes: int = None, start_minute: int = None) -> dict:
     """Handle transcribe_url tool call"""
     language = language or DEFAULT_LANGUAGE
     platform = detect_platform(url)
@@ -326,19 +376,24 @@ async def handle_transcribe_url(url: str, language: str = None, preview_minutes:
     title = info["title"]
     total_duration = info["duration"]
 
-    # Calculate duration limit for preview
+    # Calculate duration limit and start time
     duration_limit = None
+    start_time = None
     is_preview = False
+
     if preview_minutes and preview_minutes > 0:
         duration_limit = preview_minutes * 60  # Convert to seconds
         is_preview = True
+
+    if start_minute and start_minute > 0:
+        start_time = start_minute * 60  # Convert to seconds
 
     # Download audio to temp file
     temp_audio = TEMP_DIR / f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
     try:
-        # Download (with optional duration limit)
-        if not download_audio(url, temp_audio, duration_limit):
+        # Download (with optional duration limit and start time)
+        if not download_audio(url, temp_audio, duration_limit, start_time):
             return {"error": f"Failed to download audio from {url}. Make sure the video is public."}
 
         # Find the actual file (yt-dlp might add extension)
@@ -465,6 +520,7 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
                 arguments["url"],
                 arguments.get("language"),
                 arguments.get("preview_minutes"),
+                arguments.get("start_minute"),
             )
         elif name == "transcribe_file":
             result = await handle_transcribe_file(
