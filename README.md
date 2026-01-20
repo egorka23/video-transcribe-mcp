@@ -5,6 +5,7 @@ Transcribe YouTube, Instagram, and other video platforms to text using OpenAI Wh
 ## Features
 
 - **transcribe_url** - Download and transcribe video from URL (YouTube, Instagram, VK, TikTok)
+  - **preview_minutes** - Transcribe only first N minutes (for long videos)
 - **transcribe_file** - Transcribe local audio/video file
 - **list_transcripts** - List saved transcripts
 
@@ -69,6 +70,28 @@ After setup, Claude can:
 "Transcribe this video: https://youtube.com/watch?v=..."
 "Транскрибируй https://instagram.com/reel/..."
 "Show my recent transcripts"
+```
+
+### Preview Mode (for long videos)
+
+For long videos, preview first 10-15 minutes before full transcription:
+
+```
+"Preview first 10 minutes: https://youtube.com/watch?v=..."
+"Превью первых 15 минут этого видео"
+```
+
+After preview, say "continue" or "продолжай" for full transcription.
+
+### Languages
+
+- `ru` - Russian (default)
+- `en` - English
+- `auto` - Auto-detect
+
+```
+"Transcribe in English: https://youtube.com/..."
+"Транскрибируй на английском: ..."
 ```
 
 ## Supported Platforms
