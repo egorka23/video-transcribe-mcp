@@ -94,67 +94,68 @@ def get_video_info(url: str) -> dict:
     return {"title": "Unknown", "duration": 0, "uploader": "Unknown"}
 
 
+def get_audio_url(video_url: str) -> str | None:
+    """Get direct audio stream URL using yt-dlp"""
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "-f", "bestaudio", "-g", video_url],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except:
+        pass
+    return None
+
+
 def download_audio(url: str, output_path: Path, duration_limit: int = None) -> bool:
-    """Download audio from video URL using yt-dlp
+    """Download audio from video URL
 
     Args:
-        duration_limit: If set, cut audio to first N seconds using ffmpeg
+        duration_limit: If set, download only first N seconds using ffmpeg streaming
     """
     try:
-        # First download full audio
-        temp_full = output_path.parent / f"full_{output_path.name}"
+        # For preview: stream directly with ffmpeg (much faster)
+        if duration_limit:
+            audio_url = get_audio_url(url)
+            if audio_url:
+                result = subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-i", audio_url,
+                        "-t", str(duration_limit),
+                        "-vn",  # No video
+                        "-acodec", "libmp3lame",
+                        "-ab", "192k",
+                        str(output_path)
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=180  # 3 min should be enough for 10-15 min audio
+                )
+                return result.returncode == 0
 
+        # Full download: use yt-dlp
         cmd = [
             "yt-dlp",
             "-x",  # Extract audio
             "--audio-format", "mp3",
             "--audio-quality", "0",  # Best quality
-            "-o", str(temp_full),
-            "--no-playlist",  # Single video only
+            "-o", str(output_path),
+            "--no-playlist",
             "--no-warnings",
+            url
         ]
-        cmd.append(url)
 
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=600  # 10 min timeout for download
+            timeout=600
         )
-
-        if result.returncode != 0:
-            return False
-
-        # Find the actual downloaded file
-        actual_full = None
-        for f in output_path.parent.glob("full_*.mp3"):
-            actual_full = f
-            break
-
-        if not actual_full or not actual_full.exists():
-            return False
-
-        # If duration limit specified, cut with ffmpeg
-        if duration_limit:
-            cut_result = subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-i", str(actual_full),
-                    "-t", str(duration_limit),  # Duration in seconds
-                    "-acodec", "copy",  # Copy without re-encoding (fast)
-                    str(output_path)
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            # Remove full file
-            actual_full.unlink()
-            return cut_result.returncode == 0
-        else:
-            # No limit - just rename
-            actual_full.rename(output_path)
-            return True
+        return result.returncode == 0
 
     except Exception as e:
         return False
